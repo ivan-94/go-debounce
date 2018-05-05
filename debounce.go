@@ -4,22 +4,30 @@
 package debounce
 
 import (
+	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
+// ErrStoped raised by Trigger or Stop a stoped Debouncer
+var ErrStoped = errors.New("debounce stoped")
+
 // Debouncer define debounce interfac
 type Debouncer interface {
-	// Stop/Cancel the Debounce
-	Stop()
-	// Trigger a invocation
-	Trigger()
+	// Stop/Cancel the Debounce. Stop a stoped Debouncer will return ErrStoped
+	Stop() error
+	// Trigger a invocation. Trigger a stoped Debouncer will return ErrStoped
+	Trigger() error
+	// Stoped checks if Debouncer is stoped
+	Stoped() bool
 }
 
 type debounced struct {
 	// lazy create goroutine
 	runner sync.Once
 	period time.Duration
+	stoped int32
 	// trigger signal
 	in chan struct{}
 	// involve signal
@@ -28,7 +36,11 @@ type debounced struct {
 	done chan struct{}
 }
 
-func (db *debounced) Trigger() {
+func (db *debounced) Trigger() error {
+	if atomic.LoadInt32(&db.stoped) == 1 {
+		return ErrStoped
+	}
+
 	db.runner.Do(func() {
 		go func() {
 			for {
@@ -47,13 +59,22 @@ func (db *debounced) Trigger() {
 		}()
 	})
 	db.in <- struct{}{}
+	return nil
 }
 
-func (db *debounced) Stop() {
+func (db *debounced) Stop() error {
+	if !atomic.CompareAndSwapInt32(&db.stoped, 0, 1) {
+		return ErrStoped
+	}
 	db.done <- struct{}{}
 	close(db.in)
 	close(db.out)
 	close(db.done)
+	return nil
+}
+
+func (db *debounced) Stoped() bool {
+	return atomic.LoadInt32(&db.stoped) == 1
 }
 
 // New create a debouncer
